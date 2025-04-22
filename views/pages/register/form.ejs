@@ -11,6 +11,7 @@
 
   <label for=password>Password</label>
   <input type=password name=password />
+  <input type="hidden" value="<%= csrfToken %>">
 
   <p><input type=submit id=login class=pure-button value=Register /></p>
 </form>

@@ -38,6 +38,7 @@ app.use((req, res, next) => {
   if(req.session.loggedIn == undefined) {
     req.session.loggedIn = false;
     req.session.account = {};
+    req.session.token = {};
   }
   next();
 });

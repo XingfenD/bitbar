@@ -21,7 +21,42 @@ function is_xss_safe(html) {
   return true;
 }
 
-function render(req, res, next, page, title, errorMsg = false, result = null) {
+function generateToken(secretKey, validDuration = 600) {  /* the default valid duration is 10 mins */
+  const randomness = generateRandomness();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const payload = `${randomness}.${timestamp}.${validDuration}`;
+  const signature = HMAC(secretKey, payload);
+  const token = `${payload}.${signature}`;
+  return token;
+}
+
+function checkToken(req, token, secretKey) {
+  const [payload, signature] = token.split(".");
+  const [randomness, timestamp, validDuration] = payload.split(".");
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+
+  if (currentTimestamp - parseInt(timestamp) > parseInt(validDuration)) {
+    return false;
+  }
+
+  const expectedSignature = HMAC(secretKey, payload);
+  if (signature !== expectedSignature) {
+    return false;
+  }
+
+  if (req.session.token[secretKey] !== token) {
+    return false;
+  }
+
+  return true;
+}
+
+function render(req, res, next, page, title, errorMsg = false, result = null, isSensitive = false) {
+  let csrfToken = null;
+  if (isSensitive) {
+    csrfToken = generateToken(page);
+    req.session.token[page] = csrfToken;
+  }
   res.render(
     'layout/template', {
       page,
@@ -30,13 +65,14 @@ function render(req, res, next, page, title, errorMsg = false, result = null) {
       account: req.session.account,
       errorMsg,
       result,
+      csrfToken,
     }
   );
 }
 
 
 router.get('/', (req, res, next) => {
-  render(req, res, next, 'index', 'Bitbar Home');
+  render(req, res, next, 'index', 'Bitbar Home', false, null, true);
 });
 
 
@@ -47,6 +83,11 @@ router.post('/set_profile', asyncMiddleware(async (req, res, next) => {
   if(!is_xss_safe(req.body.new_profile)) {
     console.log("XSS detected!");
     render(req, res, next, 'index', 'Bitbar Home', 'XSS detected!');
+    return;
+  }
+
+  if (!checkToken(req, req.body.csrfToken, 'index')) {
+    render(req, res, next, 'index', 'Bitbar Home', 'Invalid CSRF token or token has expired!', null, true);
     return;
   }
   console.log(req.body.new_profile);
@@ -64,8 +105,7 @@ router.get('/login', (req, res, next) => {
 
 router.get('/get_login', asyncMiddleware(async (req, res, next) => {
   const db = await dbPromise;
-  // 修改为参数化查询
-  const query = `SELECT * FROM Users WHERE username = ?`; 
+  const query = `SELECT * FROM Users WHERE username = ?`;
   const result = await db.get(query, [req.query.username]);
   if(result) { // if this username actually exists
     if(checkPassword(req.query.password, result)) { // if password is valid
@@ -81,13 +121,22 @@ router.get('/get_login', asyncMiddleware(async (req, res, next) => {
 
 
 router.get('/register', (req, res, next) => {
-  render(req, res, next, 'register/form', 'Register');
+  render(req, res, next, 'register/form', 'Register', false, null, true);
 });
 
 
 router.post('/post_register', asyncMiddleware(async (req, res, next) => {
   const db = await dbPromise;
-  // 修改为参数化查询
+  if (!is_xss_safe(req.body.username)) {
+    render(req, res, next, 'register/form', 'Register', 'Unsafe username!');
+    return;
+  }
+
+  if (!checkToken(req, req.body.csrfToken, 'Register')) {
+    render(req, res, next, 'register/form', 'Register', 'Invalid CSRF token or token has expired!', null, true);
+    return;
+  }
+
   let query = `SELECT * FROM Users WHERE username = ?`;
   let result = await db.get(query, [req.body.username]);
   if(result) { // query returns results
@@ -121,7 +170,7 @@ router.get('/close', asyncMiddleware(async (req, res, next) => {
   };
   const db = await dbPromise;
   // 修改为参数化查询
-  const query = `DELETE FROM Users WHERE username = ?`; 
+  const query = `DELETE FROM Users WHERE username = ?`;
   await db.run(query, [req.session.account.username]);
   req.session.loggedIn = false;
   req.session.account = {};
@@ -175,7 +224,7 @@ router.get('/transfer', (req, res, next) => {
     render(req, res, next, 'login/form', 'Login', 'You must be logged in to use this feature!');
     return;
   };
-  render(req, res, next, 'transfer/form', 'Transfer Bitbars', false, {receiver:null, amount:null});
+  render(req, res, next, 'transfer/form', 'Transfer Bitbars', false, {receiver:null, amount:null}, true);
 });
 
 
@@ -186,27 +235,37 @@ router.post('/post_transfer', asyncMiddleware(async(req, res, next) => {
   };
 
   if(req.body.destination_username === req.session.account.username) {
-    render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'You cannot send money to yourself!', {receiver:null, amount:null});
+    render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'You cannot send money to yourself!', {receiver:null, amount:null}, true);
+    return;
+  }
+
+  if(!is_xss_safe(req.body.destination_username)) {
+    render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'Unsafe username!', {receiver:null, amount:null}, true);
+    return;
+  }
+
+  if(!checkToken(req, req.body.csrfToken, 'transfer/form')) {
+    render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'Invalid CSRF token or token has expired!', {receiver:null, amount:null}, true);
     return;
   }
 
   const db = await dbPromise;
-  // 修改为参数化查询
+
   let query = `SELECT * FROM Users WHERE username = ?`;
   const receiver = await db.get(query, [req.body.destination_username]);
   if(receiver) { // if user exists
     const amount = parseInt(req.body.quantity);
     if(Number.isNaN(amount) || amount > req.session.account.bitbars || amount < 1) {
-      render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'Invalid transfer amount!', {receiver:null, amount:null});
+      render(req, res, next, 'transfer/form', 'Transfer Bitbars', 'Invalid transfer amount!', {receiver:null, amount:null}, true);
       return;
     }
 
     req.session.account.bitbars -= amount;
-    // 修改为参数化查询
+
     query = `UPDATE Users SET bitbars = ? WHERE username = ?`;
     await db.run(query, [req.session.account.bitbars, req.session.account.username]);
     const receiverNewBal = receiver.bitbars + amount;
-    // 修改为参数化查询
+
     query = `UPDATE Users SET bitbars = ? WHERE username = ?`;
     await db.run(query, [receiverNewBal, receiver.username]);
     render(req, res, next, 'transfer/success', 'Transfer Complete', false, {receiver, amount});
@@ -219,7 +278,7 @@ router.post('/post_transfer', asyncMiddleware(async(req, res, next) => {
       oldQ = q;
       q = q.replace(/script|SCRIPT|img|IMG/g, '');
     }
-    render(req, res, next, 'transfer/form', 'Transfer Bitbars', `User ${q} does not exist!`, {receiver:null, amount:null});
+    render(req, res, next, 'transfer/form', 'Transfer Bitbars', `User ${q} does not exist!`, {receiver:null, amount:null}, true);
   }
 }));
 
