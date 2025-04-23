@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import cookieSession from 'cookie-session';
 import logger from 'morgan';
-
+import { HMAC } from './utils/crypto';
 import router from'./router';
 
 const app = express();
@@ -24,17 +24,21 @@ app.use((req, res, next) => {
   next();
 });
 
+const HMAC_SECRET = 'your-secret-key-here';
+
 // set lax cookie policies (DO NOT CHANGE)
 app.use(cookieSession({
   name: 'session',
   maxAge: 24 * 60 * 60 * 1000, // 24 hours
-  signed: false,
+  signed: true,
   sameSite: false,
   httpOnly: false,
+  secret: HMAC_SECRET
 }));
 
 // initialize session if necessary
 app.use((req, res, next) => {
+  console.log('Request URL:', req.url);
   if(req.session.loggedIn == undefined) {
     req.session.loggedIn = false;
     req.session.account = {};
@@ -43,7 +47,34 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use((req, res, next) => {
+  /* verify the cookie signature */
+  if (req.session && req.session._hmac) {
+    const signature = HMAC(HMAC_SECRET, JSON.stringify(req.session.account));
+    console.log('Received Session Signature:', signature);
+    console.log('Stored Session Signature:', req.session._hmac);
+    if (signature !== req.session._hmac) {
+      /* invalid cookie destroy the session*/
+      req.session = null;
+      return res.status(403).send('Session tampering detected');
+    }
+  }
+
+  next();
+});
+
 app.use(router);
+
+app.use((req, res, next) => { /* update the signiture before sending the response */
+  console.log('Updating session signature');
+  if (req.session) {
+    const signature = HMAC(HMAC_SECRET, JSON.stringify(req.session.account));
+    console.log('Generated signature', signature);
+    req.session._hmac = signature;
+  }
+  next();
+});
+
 
 // catch 404 and forward to error handler
 app.use((req, res, next) => {

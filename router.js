@@ -31,20 +31,34 @@ function generateToken(secretKey, validDuration = 600) {  /* the default valid d
 }
 
 function checkToken(req, token, secretKey) {
-  const [payload, signature] = token.split(".");
-  const [randomness, timestamp, validDuration] = payload.split(".");
-  const currentTimestamp = Math.floor(Date.now() / 1000);
+  if (!token) {
+    console.log("token is empty!");
+    return false;
+  }
+  console.log("token received:" + token);
+  const tokenParts = token.split('.');
+  const signature = tokenParts.pop(); // 获取 signature
+  const payload = tokenParts.join('.'); // 获取 payload
+  const payloadParts = payload.split('.');
+  const timestamp = payloadParts[1];
+  const validDuration = payloadParts[2];
 
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  console.log("session:" + req.session.token);
   if (currentTimestamp - parseInt(timestamp) > parseInt(validDuration)) {
+    console.log("token expired!");
     return false;
   }
 
   const expectedSignature = HMAC(secretKey, payload);
   if (signature !== expectedSignature) {
+    console.log("signature mismatch!");
     return false;
   }
 
   if (req.session.token[secretKey] !== token) {
+    console.log(req.session.token[secretKey]);
+    console.log("token mismatch!");
     return false;
   }
 
@@ -57,6 +71,8 @@ function render(req, res, next, page, title, errorMsg = false, result = null, is
     csrfToken = generateToken(page);
     req.session.token[page] = csrfToken;
   }
+  console.log("pagename index:" + page)
+  console.log("token generated:" + csrfToken);
   res.render(
     'layout/template', {
       page,
@@ -79,21 +95,20 @@ router.get('/', (req, res, next) => {
 router.post('/set_profile', asyncMiddleware(async (req, res, next) => {
   req.session.account.profile = req.body.new_profile;
   const db = await dbPromise;
-  console.log(!is_xss_safe(req.body.new_profile));
   if(!is_xss_safe(req.body.new_profile)) {
     console.log("XSS detected!");
-    render(req, res, next, 'index', 'Bitbar Home', 'XSS detected!');
+    render(req, res, next, 'index', 'Bitbar Home', 'XSS detected!', null, true);
     return;
   }
-
+  console.assert(req.body);
   if (!checkToken(req, req.body.csrfToken, 'index')) {
     render(req, res, next, 'index', 'Bitbar Home', 'Invalid CSRF token or token has expired!', null, true);
     return;
   }
-  console.log(req.body.new_profile);
+  // console.log(req.body.new_profile);
   const query = `UPDATE Users SET profile = ? WHERE username = ?`;
   const result = await db.run(query, [req.body.new_profile, req.session.account.username]);
-  render(req, res, next, 'index', 'Bitbar Home');
+  render(req, res, next, 'index', 'Bitbar Home', false, null, true);
 
 }));
 
@@ -128,11 +143,11 @@ router.get('/register', (req, res, next) => {
 router.post('/post_register', asyncMiddleware(async (req, res, next) => {
   const db = await dbPromise;
   if (!is_xss_safe(req.body.username)) {
-    render(req, res, next, 'register/form', 'Register', 'Unsafe username!');
+    render(req, res, next, 'register/form', 'Register', 'Unsafe username!', null, true);
     return;
   }
 
-  if (!checkToken(req, req.body.csrfToken, 'Register')) {
+  if (!checkToken(req, req.body.csrfToken, 'register/form')) {
     render(req, res, next, 'register/form', 'Register', 'Invalid CSRF token or token has expired!', null, true);
     return;
   }
@@ -141,14 +156,14 @@ router.post('/post_register', asyncMiddleware(async (req, res, next) => {
   let result = await db.get(query, [req.body.username]);
   if(result) { // query returns results
     if(result.username === req.body.username) { // if username exists
-      render(req, res, next, 'register/form', 'Register', 'This username already exists!');
+      render(req, res, next, 'register/form', 'Register', 'This username already exists!', null, true);
       return;
     }
   }
   const salt = generateRandomness();
   const hashedPassword = KDF(req.body.password, salt);
-  console.log(hashedPassword);
-  console.log(salt);
+  // console.log(hashedPassword);
+  // console.log(salt);
   query = `INSERT INTO Users(username, hashedPassword, salt, profile, bitbars) VALUES(?, ?, ?, ?, ?)`;
   await db.run(query, [req.body.username, hashedPassword, salt, '', 100]);
   req.session.loggedIn = true;
@@ -174,14 +189,14 @@ router.get('/close', asyncMiddleware(async (req, res, next) => {
   await db.run(query, [req.session.account.username]);
   req.session.loggedIn = false;
   req.session.account = {};
-  render(req, res, next, 'index', 'Bitbar Home', 'Deleted account successfully!');
+  render(req, res, next, 'index', 'Bitbar Home', 'Deleted account successfully!', null, true);
 }));
 
 
 router.get('/logout', (req, res, next) => {
   req.session.loggedIn = false;
   req.session.account = {};
-  render(req, res, next, 'index', 'Bitbar Home', 'Logged out successfully!');
+  render(req, res, next, 'index', 'Bitbar Home', 'Logged out successfully!', null, true);
 });
 
 
@@ -202,7 +217,6 @@ router.get('/profile', asyncMiddleware(async (req, res, next) => {
   }
 
   const db = await dbPromise;
-  // 修改为参数化查询
   const query = `SELECT * FROM Users WHERE username = ?`;
   let result;
   try {
