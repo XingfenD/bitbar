@@ -129,6 +129,11 @@ router.get('/get_login', asyncMiddleware(async (req, res, next) => {
       req.session.account = result;
       render(req, res, next, 'login/success', 'Bitbar Home');
       return;
+    } else {
+      var delay = 1800 + Math.random() * 500;
+      await sleep(delay);
+      render(req, res, next, 'login/form', 'Login', 'This username and password combination does not exist!');
+      return;
     }
   }
   render(req, res, next, 'login/form', 'Login', 'This username and password combination does not exist!');
